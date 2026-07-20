@@ -1,45 +1,237 @@
-<div align="center">
-    <a href="https://rojo.space"><img src="assets/brand_images/logo-512.png" alt="Rojo" height="217" /></a>
-</div>
+# Prism
 
-<div>&nbsp;</div>
+<p align="center">
+  <img src="plugin/assets/prism/logo.png" alt="Prism Logo" width="520">
+</p>
 
-<div align="center">
-    <a href="https://github.com/rojo-rbx/rojo/actions"><img src="https://github.com/rojo-rbx/rojo/workflows/CI/badge.svg" alt="Actions status" /></a>
-    <a href="https://crates.io/crates/rojo"><img src="https://img.shields.io/crates/v/rojo.svg?label=latest%20release" alt="Latest server version" /></a>
-    <a href="https://rojo.space/docs"><img src="https://img.shields.io/badge/docs-website-brightgreen.svg" alt="Rojo Documentation" /></a>
-</div>
+<p align="center">
+  <strong>Studio automation for Roblox.</strong>
+</p>
 
-<hr />
+Prism is a Roblox Studio automation toolkit built on top of the ideas that made Rojo successful.
 
-**Rojo** is a tool designed to enable Roblox developers to use professional-grade software engineering tools.
+Rojo solved source synchronization, meanwhile Prism solves automation.
 
-With Rojo, it's possible to use industry-leading tools like **Visual Studio Code** and **Git**.
+While inheriting Rojo's power of synchronizing files, Prism allows external tools to inspect and interact with a running Roblox Studio session through a local automation protocol.
 
-Rojo is designed for power users who want to use the best tools available for building games, libraries, and plugins.
+---
 
-## Features
-Rojo enables:
+## Current Features
 
-* Working on scripts and models from the filesystem, in your favorite editor
-* Versioning your game, library, or plugin using Git or another VCS
-* Streaming `rbxmx` and `rbxm` models into your game in real time
-* Packaging and deploying your project to Roblox.com from the command line
-* Pulling Instances from Roblox place and model files back into an existing Rojo project with `rojo syncback`
+### Remote execution
 
-Rojo also has an optional two-way sync setting in the Studio plugin for syncing supported Studio edits back to the filesystem.
+Execute trusted Luau directly inside Roblox Studio from your terminal.
 
-Some workflows, like fully automatic conversion of every existing game into a Rojo project, are still limited and may require manual project configuration.
+```bash
+prism exec script.lua
+```
 
-## [Documentation](https://rojo.space/docs)
-Documentation is hosted in the [rojo.space repository](https://github.com/rojo-rbx/rojo.space).
+Example:
 
-## Contributing
-Check out our [contribution guide](CONTRIBUTING.md) for detailed instructions for helping work on Rojo!
+```lua
+local part = Instance.new("Part")
+part.Name = "PrismManual"
+part.Parent = workspace
 
-Pull requests are welcome!
+return part.Name
+```
 
-Rojo supports Rust 1.88 and newer. The minimum supported version of Rust is based on the latest versions of the dependencies that Rojo has.
+---
+
+### Typed inspection
+
+Inspect the live Studio DataModel without generating custom Luau.
+
+```bash
+prism inspect Workspace
+
+prism inspect Workspace.Map
+
+prism inspect Workspace.PrismManual --properties
+```
+
+Output:
+
+```text
+Workspace [Workspace]
+  children:
+    Terrain [Terrain]
+    Rig [Model]
+    SpawnLocation [SpawnLocation]
+    Baseplate [Part]
+```
+
+Unlike `exec`, `inspect` is deterministic, typed, and intended for tooling.
+
+---
+
+### Studio plugin
+
+Prism includes its own Studio plugin with:
+
+- Prism branding
+- local automation session
+- remote execution
+- typed automation handlers
+- automatic plugin installation
+
+---
+
+## Philosophy
+
+Prism is **not** a replacement for Rojo.
+
+It is a companion tool.
+
+Rojo answers:
+
+> How do I synchronize my project with Roblox Studio?
+
+Prism answers:
+
+> How do I automate and inspect Roblox Studio?
+
+Arbitrary execution is available through:
+
+```bash
+prism exec
+```
+
+Common operations should eventually become typed commands such as:
+
+```bash
+prism inspect
+prism selection
+prism camera
+prism screenshot
+```
+
+Typed commands provide:
+
+- deterministic output
+- better validation
+- stable APIs
+- safer tooling
+- improved AI integration
+
+---
+
+## Building
+
+Requirements:
+
+- Rust
+- Cargo
+- Roblox Studio
+
+Build Prism:
+
+```bash
+cargo build --release
+```
+
+The executable will be:
+
+```text
+target/release/prism
+```
+
+---
+
+## Installing the Studio plugin
+
+```bash
+prism plugin install
+```
+
+Restart Roblox Studio after installation.
+
+---
+
+## Serving a project
+
+Inside a Rojo-compatible project:
+
+```bash
+prism serve
+```
+
+If multiple project files exist:
+
+```bash
+prism serve path/to/project.project.json
+```
+
+---
+
+## Automation
+
+Current automation commands:
+
+```bash
+prism exec script.lua
+
+prism inspect Workspace
+```
+
+---
+
+## Compatibility
+
+Prism remains compatible with existing Rojo project files.
+
+Compatibility-sensitive internal identifiers, routes, and project formats remain unchanged.
+
+Examples include:
+
+- `/api/rojo`
+- Rojo project files
+- existing synchronization protocol
+
+This allows existing projects to continue working while adding Studio automation capabilities.
+
+---
+
+## Roadmap
+
+The current release establishes the automation platform.
+
+Planned capabilities include:
+
+- Selection
+- Camera
+- Focus
+- Search
+- Screenshots
+- Snapshot & Diff
+- Preview Mode
+- Watch
+- Studio diagnostics
+- Automated playtesting
+
+---
+
+## Status
+
+Prism is currently in active development.
+
+Current milestone:
+
+**Prism 0.1**
+
+Implemented:
+
+- Studio automation protocol
+- Remote execution
+- Typed inspection
+- Studio plugin
+- A minor makeover of the Rojo UI
+- Automatic plugin installation
+
+---
 
 ## License
-Rojo is available under the terms of the Mozilla Public License, Version 2.0. See [LICENSE.txt](LICENSE.txt) for details.
+
+Prism is derived from Rojo.
+
+Please refer to the repository license and retain all applicable attribution to the upstream Rojo project.
