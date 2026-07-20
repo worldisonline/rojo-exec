@@ -79,17 +79,7 @@ Prism includes its own Studio plugin with:
 
 ## Philosophy
 
-Prism is **not** a replacement for Rojo.
-
-It is a companion tool.
-
-Rojo answers:
-
-> How do I synchronize my project with Roblox Studio?
-
-Prism answers:
-
-> How do I automate and inspect Roblox Studio?
+Prism is more an expansion on remote execution/inspection or a companion than a Rojo replacement.
 
 Arbitrary execution is available through:
 
