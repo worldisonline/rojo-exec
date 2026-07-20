@@ -3,11 +3,14 @@
 #![recursion_limit = "1024"]
 
 pub mod cli;
+pub mod exec;
 
 #[cfg(test)]
 mod tree_view;
 
 mod auth_cookie;
+pub mod automation;
+mod automation_status;
 mod change_processor;
 mod glob;
 mod json;

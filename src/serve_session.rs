@@ -12,7 +12,10 @@ use memofs::Vfs;
 use thiserror::Error;
 
 use crate::{
+    automation::AutomationJobStore,
+    automation_status::AutomationStatusStore,
     change_processor::ChangeProcessor,
+    exec::ExecJobStore,
     message_queue::MessageQueue,
     project::{Project, ProjectError},
     session_id::SessionId,
@@ -82,6 +85,15 @@ pub struct ServeSession {
     /// to be applied.
     message_queue: Arc<MessageQueue<AppliedPatchSet>>,
 
+    /// Execution jobs submitted to this serve session.
+    exec_job_store: ExecJobStore,
+
+    /// Typed one-shot automation jobs submitted to this serve session.
+    automation_job_store: AutomationJobStore,
+
+    /// Studio plugin identity and availability for the automation API.
+    automation_status: AutomationStatusStore,
+
     /// A channel to send mutation requests on. These will be handled by the
     /// ChangeProcessor and trigger changes in the tree.
     tree_mutation_sender: Sender<PatchSet>,
@@ -143,6 +155,9 @@ impl ServeSession {
             root_project,
             tree,
             message_queue,
+            exec_job_store: ExecJobStore::new(),
+            automation_job_store: AutomationJobStore::new(),
+            automation_status: AutomationStatusStore::new(),
             tree_mutation_sender,
             vfs,
         })
@@ -167,6 +182,18 @@ impl ServeSession {
 
     pub fn message_queue(&self) -> &MessageQueue<AppliedPatchSet> {
         &self.message_queue
+    }
+
+    pub fn exec_job_store(&self) -> &ExecJobStore {
+        &self.exec_job_store
+    }
+
+    pub fn automation_job_store(&self) -> &AutomationJobStore {
+        &self.automation_job_store
+    }
+
+    pub fn automation_status(&self) -> &AutomationStatusStore {
+        &self.automation_status
     }
 
     pub fn session_id(&self) -> SessionId {

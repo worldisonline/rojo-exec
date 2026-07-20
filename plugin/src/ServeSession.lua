@@ -13,6 +13,8 @@ local Timer = require(script.Parent.Timer)
 
 local ChangeBatcher = require(script.Parent.ChangeBatcher)
 local encodePatchUpdate = require(script.Parent.ChangeBatcher.encodePatchUpdate)
+local Automation = require(script.Parent.Automation)
+local Exec = require(script.Parent.Exec)
 local InstanceMap = require(script.Parent.InstanceMap)
 local PatchSet = require(script.Parent.PatchSet)
 local Reconciler = require(script.Parent.Reconciler)
@@ -26,6 +28,121 @@ local Status = strict("Session.Status", {
 	Connected = "Connected",
 	Disconnected = "Disconnected",
 })
+
+local AUTOMATION_HEARTBEAT_INTERVAL_SECONDS = 3
+
+local function currentStudioMode()
+	if RunService:IsEdit() then
+		return "edit"
+	elseif RunService:IsRunMode() then
+		return "run"
+	elseif RunService:IsRunning() then
+		return "play"
+	else
+		return "unknown"
+	end
+end
+
+local AutomationHeartbeat = {}
+AutomationHeartbeat.__index = AutomationHeartbeat
+
+function AutomationHeartbeat.new(options)
+	return setmetatable({
+		__apiContext = options.apiContext,
+		__delay = options.delay or Promise.delay,
+		__getStudioMode = options.getStudioMode or currentStudioMode,
+		__onError = options.onError,
+		__onReady = options.onReady or function() end,
+		__running = false,
+		__ready = false,
+		__generation = 0,
+		__requestPromise = nil,
+		__scheduledPromise = nil,
+	}, AutomationHeartbeat)
+end
+
+function AutomationHeartbeat:__isCurrent(generation)
+	return self.__running and self.__generation == generation
+end
+
+function AutomationHeartbeat:__schedule(generation)
+	if not self:__isCurrent(generation) then
+		return
+	end
+
+	self.__scheduledPromise = self.__delay(AUTOMATION_HEARTBEAT_INTERVAL_SECONDS):andThen(function()
+		if self:__isCurrent(generation) then
+			self:__send(generation)
+		end
+	end)
+end
+
+function AutomationHeartbeat:__send(generation)
+	if not self:__isCurrent(generation) then
+		return
+	end
+
+	local ok, requestPromise =
+		pcall(self.__apiContext.updateAutomationStatus, self.__apiContext, self.__getStudioMode())
+	if not ok then
+		self.__onError(requestPromise)
+		return
+	end
+
+	self.__requestPromise = requestPromise
+	requestPromise
+		:andThen(function(response)
+			if not self:__isCurrent(generation) then
+				return
+			end
+
+			self.__requestPromise = nil
+			if response.registration == "conflict" then
+				self.__onError("Another active Prism plugin session is already registered for automation")
+				return
+			end
+			if not self.__ready then
+				self.__ready = true
+				self.__onReady()
+			end
+
+			self:__schedule(generation)
+		end)
+		:catch(function(errorValue)
+			if self:__isCurrent(generation) then
+				self.__onError(errorValue)
+			end
+		end)
+end
+
+function AutomationHeartbeat:start()
+	if self.__running then
+		return
+	end
+
+	self.__running = true
+	self.__ready = false
+	self.__generation += 1
+	self:__send(self.__generation)
+end
+
+function AutomationHeartbeat:stop()
+	if not self.__running then
+		return
+	end
+
+	self.__running = false
+	self.__ready = false
+	self.__generation += 1
+	if self.__scheduledPromise ~= nil then
+		self.__scheduledPromise:cancel()
+		self.__scheduledPromise = nil
+	end
+	if self.__requestPromise ~= nil then
+		self.__requestPromise:cancel()
+		self.__requestPromise = nil
+	end
+end
 
 local function debugPatch(object)
 	return Fmt.debugify(object, function(patch, output)
@@ -112,6 +229,36 @@ function ServeSession.new(options)
 	}
 
 	setmetatable(self, ServeSession)
+
+	self.__exec = Exec.new({
+		apiContext = self.__apiContext,
+		onError = function(errorValue)
+			if self.__status ~= Status.Disconnected then
+				self:__stopInternal(errorValue)
+			end
+		end,
+	})
+	self.__automation = Automation.new({
+		apiContext = self.__apiContext,
+		onError = function(errorValue)
+			if self.__status ~= Status.Disconnected then
+				self:__stopInternal(errorValue)
+			end
+		end,
+	})
+	self.__automationHeartbeat = AutomationHeartbeat.new({
+		apiContext = self.__apiContext,
+		onReady = function()
+			if self.__status == Status.Connected then
+				self.__automation:start()
+			end
+		end,
+		onError = function(errorValue)
+			if self.__status ~= Status.Disconnected then
+				self:__stopInternal(errorValue)
+			end
+		end,
+	})
 
 	return self
 end
@@ -202,13 +349,13 @@ function ServeSession:start()
 				self:__setStatus(Status.Connected, serverInfo.projectName)
 				self:__applyGameAndPlaceId(serverInfo)
 
-				return self.__apiContext:connectWebSocket({
+				local websocketPromise = self.__apiContext:connectWebSocket({
 					["messages"] = function(messagesPacket)
 						if self.__status == Status.Disconnected then
 							return
 						end
 
-						Log.debug("Received {} messages from Rojo server", #messagesPacket.messages)
+						Log.debug("Received {} messages from Prism server", #messagesPacket.messages)
 
 						for _, message in messagesPacket.messages do
 							self:__applyPatch(message)
@@ -216,6 +363,12 @@ function ServeSession:start()
 						self.__apiContext:setMessageCursor(messagesPacket.messageCursor)
 					end,
 				})
+
+				-- connectWebSocket creates the stream client synchronously. Starting
+				-- here keeps exec on the same stable, fully-synced session lifecycle.
+				self.__automationHeartbeat:start()
+				self.__exec:start()
+				return websocketPromise
 			end)
 		end)
 		:catch(function(err)
@@ -254,7 +407,7 @@ function ServeSession:__onActiveScriptChanged(activeScript)
 
 	local scriptId = self.__instanceMap.fromInstances[activeScript]
 	if scriptId == nil then
-		Log.trace("Not opening script {} because it is not known by Rojo.", activeScript)
+		Log.trace("Not opening script {} because it is not known by Prism.", activeScript)
 
 		return
 	end
@@ -406,7 +559,7 @@ end
 
 function ServeSession:__applyPatch(patch)
 	local patchTimestamp = DateTime.now():FormatLocalTime("LTS", "en-us")
-	local historyRecording = ChangeHistoryService:TryBeginRecording("Rojo: Patch " .. patchTimestamp)
+	local historyRecording = ChangeHistoryService:TryBeginRecording("Prism: Patch " .. patchTimestamp)
 	if not historyRecording then
 		-- There can only be one recording at a time
 		Log.debug("Failed to begin history recording for " .. patchTimestamp .. ". Another recording is in progress.")
@@ -461,7 +614,7 @@ function ServeSession:__applyPatch(patch)
 
 	if not PatchSet.isEmpty(unappliedPatch) then
 		Log.debug(
-			"Could not apply all changes requested by the Rojo server:\n{}",
+			"Could not apply all changes requested by the Prism server:\n{}",
 			PatchSet.humanSummary(self.__instanceMap, unappliedPatch)
 		)
 	end
@@ -492,7 +645,7 @@ function ServeSession:__initialSync(serverInfo)
 
 		-- For any instances that line up with the Rojo server's view, start
 		-- tracking them in the reconciler.
-		Log.trace("Matching existing Roblox instances to Rojo IDs")
+		Log.trace("Matching existing Roblox instances to Prism IDs")
 		self:setLoadingText("Hydrating instance map...")
 		self.__reconciler:hydrate(readResponseBody.instances, serverInfo.rootInstanceId, game)
 
@@ -504,7 +657,7 @@ function ServeSession:__initialSync(serverInfo)
 			self.__reconciler:diff(readResponseBody.instances, serverInfo.rootInstanceId, game)
 
 		if not success then
-			Log.error("Could not compute a diff to catch up to the Rojo server: {:#?}", catchUpPatch)
+			Log.error("Could not compute a diff to catch up to the Prism server: {:#?}", catchUpPatch)
 		end
 
 		for _, update in catchUpPatch.updated do
@@ -514,7 +667,7 @@ function ServeSession:__initialSync(serverInfo)
 				-- message instead of crashing.
 				return Promise.reject(
 					"Cannot sync a model as a place."
-						.. "\nEnsure Rojo is serving a project file that has a DataModel at the root of its tree and try again."
+						.. "\nEnsure Prism is serving a project file that has a DataModel at the root of its tree and try again."
 						.. "\nSee project file docs: https://rojo.space/docs/v7/project-format/"
 				)
 			end
@@ -528,7 +681,7 @@ function ServeSession:__initialSync(serverInfo)
 		end
 
 		if userDecision == "Abort" then
-			return Promise.reject("Aborted Rojo sync operation")
+			return Promise.reject("Aborted Prism sync operation")
 		elseif userDecision == "Reject" then
 			if not self.__twoWaySync then
 				return Promise.reject("Cannot reject sync operation without two-way sync enabled")
@@ -569,6 +722,9 @@ function ServeSession:__initialSync(serverInfo)
 end
 
 function ServeSession:__stopInternal(err)
+	self.__automationHeartbeat:stop()
+	self.__automation:stop()
+	self.__exec:stop()
 	self:__setStatus(Status.Disconnected, err)
 	self.__apiContext:disconnect()
 	self.__instanceMap:stop()
@@ -587,5 +743,10 @@ function ServeSession:__setStatus(status, detail)
 		self.__statusChangedCallback(status, detail)
 	end
 end
+
+ServeSession._test = {
+	AutomationHeartbeat = AutomationHeartbeat,
+	currentStudioMode = currentStudioMode,
+}
 
 return ServeSession

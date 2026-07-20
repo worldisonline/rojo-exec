@@ -56,7 +56,7 @@ local function Navbar(props)
 			}),
 
 			Text = e("TextLabel", {
-				Text = "Settings",
+				Text = "Prism Settings",
 				FontFace = theme.Font.Thin,
 				TextSize = theme.TextSize.Large,
 				TextColor3 = navbarTheme.TextColor,
@@ -65,6 +65,17 @@ local function Navbar(props)
 				Size = UDim2.new(1, 0, 1, 0),
 
 				BackgroundTransparency = 1,
+			}),
+
+			Logo = e("ImageLabel", {
+				Image = Assets.Images.Logo,
+				ImageColor3 = theme.Header.LogoColor,
+				ImageTransparency = props.transparency,
+				BackgroundTransparency = 1,
+				ScaleType = Enum.ScaleType.Fit,
+				Size = UDim2.fromOffset(24, 24),
+				Position = UDim2.new(1, -4, 0.5, 0),
+				AnchorPoint = Vector2.new(1, 0.5),
 			}),
 		})
 	end)
@@ -214,7 +225,7 @@ function SettingsPage:render()
 			AutoConnectPlaytestServer = e(Setting, {
 				id = "autoConnectPlaytestServer",
 				name = "Auto Connect Playtest Server",
-				description = "Automatically connect game server to Rojo when playtesting while connected in Edit",
+				description = "Automatically connect game server to Prism when playtesting while connected in Edit",
 				tag = "unstable",
 				transparency = self.props.transparency,
 				layoutOrder = layoutIncrement(),
@@ -269,7 +280,7 @@ function SettingsPage:render()
 			TimingLogsEnabled = e(Setting, {
 				id = "timingLogsEnabled",
 				name = "Timing Logs",
-				description = "Toggle logging timing of internal actions for benchmarking Rojo performance",
+				description = "Toggle logging timing of internal actions for benchmarking Prism performance",
 				tag = "debug",
 				transparency = self.props.transparency,
 				layoutOrder = layoutIncrement(),

@@ -14,6 +14,35 @@ local validateApiSocketPacket = Types.ifEnabled(Types.ApiSocketPacket)
 local validateApiSerialize = Types.ifEnabled(Types.ApiSerializeResponse)
 local validateApiRefPatch = Types.ifEnabled(Types.ApiRefPatchResponse)
 
+local EXEC_COMPLETION_BODY_LIMIT_BYTES = 256 * 1024
+local AUTOMATION_COMPLETION_BODY_LIMIT_BYTES = 4 * 1024 * 1024
+local AUTOMATION_HANDLER_VERSION = 2
+
+local function generatePluginSessionId()
+	return HttpService:GenerateGUID(false)
+end
+
+local function beginPluginSession(apiContext, serverSessionId, generateId)
+	apiContext.__sessionId = serverSessionId
+	apiContext.__pluginSessionId = (generateId or generatePluginSessionId)()
+	return apiContext.__pluginSessionId
+end
+
+local function withExecSession(payload, pluginSessionId, studioMode)
+	local body = table.clone(payload)
+	body.pluginSessionId = pluginSessionId
+	body.studioMode = studioMode
+	return body
+end
+
+local function buildExecClaimUrl(baseUrl, pluginSessionId, studioMode)
+	return ("%s/api/exec/jobs/next?pluginSessionId=%s&studioMode=%s"):format(baseUrl, pluginSessionId, studioMode)
+end
+
+local function buildAutomationClaimUrl(baseUrl, pluginSessionId, studioMode)
+	return ("%s/api/automation/jobs/next?pluginSessionId=%s&studioMode=%s"):format(baseUrl, pluginSessionId, studioMode)
+end
+
 local function rejectFailedRequests(response)
 	if response.code >= 400 then
 		local message = string.format("HTTP %s:\n%s", tostring(response.code), response.body)
@@ -24,11 +53,38 @@ local function rejectFailedRequests(response)
 	return response
 end
 
+local function decodeExecResponse(response, validator, description, protocolName)
+	protocolName = protocolName or "Prism exec"
+	local decodeOk, body = pcall(response.msgpack, response)
+	if not decodeOk then
+		return Promise.reject(
+			string.format("%s protocol error: could not decode %s: %s", protocolName, description, tostring(body))
+		)
+	end
+
+	local valid, validationError = validator(body)
+	if not valid then
+		return Promise.reject(
+			string.format("%s protocol error: malformed %s: %s", protocolName, description, tostring(validationError))
+		)
+	end
+
+	return body
+end
+
+local function isCompletionConflict(errorValue)
+	-- The existing HTTP wrapper intentionally turns every non-2xx response
+	-- into Http.Error.Unknown and includes the status at the start of its
+	-- message. Keep this compatibility check here instead of creating another
+	-- HTTP connection path just for exec.
+	return tostring(errorValue):find("^Unknown HTTP error: 409:") ~= nil
+end
+
 local function rejectWrongProtocolVersion(infoResponseBody)
 	if infoResponseBody.protocolVersion ~= Config.protocolVersion then
 		local message = (
-			"Found a Rojo dev server, but it's using a different protocol version, and is incompatible."
-			.. "\nMake sure you have matching versions of both the Rojo plugin and server!"
+			"Found a Prism dev server, but it's using a different protocol version, and is incompatible."
+			.. "\nMake sure you have matching versions of both the Prism plugin and server!"
 			.. "\n\nYour client is version %s, with protocol version %s. It expects server version %s."
 			.. "\nYour server is version %s, with protocol version %s."
 			.. "\n\nGo to https://github.com/rojo-rbx/rojo for more details."
@@ -57,7 +113,7 @@ local function rejectWrongPlaceId(infoResponseBody)
 			end
 
 			local message = (
-				"Found a Rojo server, but its project is set to only be used with a specific list of places."
+				"Found a Prism server, but its project is set to only be used with a specific list of places."
 				.. "\nYour place ID is %u, but needs to be one of these:"
 				.. "\n%s"
 				.. "\n\nTo change this list, edit 'servePlaceIds' in your .project.json file."
@@ -77,7 +133,7 @@ local function rejectWrongPlaceId(infoResponseBody)
 			end
 
 			local message = (
-				"Found a Rojo server, but its project is set to not be used with a specific list of places."
+				"Found a Prism server, but its project is set to not be used with a specific list of places."
 				.. "\nYour place ID is %u, but needs to not be one of these:"
 				.. "\n%s"
 				.. "\n\nTo change this list, edit 'blockedPlaceIds' in your .project.json file."
@@ -99,6 +155,8 @@ function ApiContext.new(baseUrl)
 	local self = {
 		__baseUrl = baseUrl,
 		__sessionId = nil,
+		__pluginSessionId = nil,
+		__connectionGeneration = 0,
 		__messageCursor = -1,
 		__wsClient = nil,
 		__connected = true,
@@ -115,6 +173,7 @@ function ApiContext:__fmtDebug(output)
 	output:writeLine("Connected: {}", self.__connected)
 	output:writeLine("Base URL: {}", self.__baseUrl)
 	output:writeLine("Session ID: {}", self.__sessionId)
+	output:writeLine("Plugin Session ID: {}", self.__pluginSessionId)
 	output:writeLine("Message Cursor: {}", self.__messageCursor)
 
 	output:unindent()
@@ -123,6 +182,7 @@ end
 
 function ApiContext:disconnect()
 	self.__connected = false
+	self.__connectionGeneration += 1
 	for request in self.__activeRequests do
 		Log.trace("Cancelling request {}", request)
 		request:cancel()
@@ -134,6 +194,7 @@ function ApiContext:disconnect()
 		self.__wsClient:Close()
 	end
 	self.__wsClient = nil
+	self.__pluginSessionId = nil
 end
 
 function ApiContext:setMessageCursor(index)
@@ -141,6 +202,9 @@ function ApiContext:setMessageCursor(index)
 end
 
 function ApiContext:connect()
+	self.__connected = true
+	self.__connectionGeneration += 1
+	local generation = self.__connectionGeneration
 	local url = ("%s/api/rojo"):format(self.__baseUrl)
 
 	return Http.get(url)
@@ -154,10 +218,17 @@ function ApiContext:connect()
 		end)
 		:andThen(rejectWrongPlaceId)
 		:andThen(function(body)
-			self.__sessionId = body.sessionId
+			if not self.__connected or self.__connectionGeneration ~= generation then
+				return Promise.reject("Connection was stopped before server verification completed")
+			end
+			beginPluginSession(self, body.sessionId)
 
 			return body
 		end)
+end
+
+function ApiContext:getPluginSessionId()
+	return self.__pluginSessionId
 end
 
 function ApiContext:read(ids)
@@ -327,5 +398,204 @@ function ApiContext:refPatch(ids: { string })
 			return response_body
 		end)
 end
+
+function ApiContext:claimNextExecJob(studioMode)
+	local validMode, modeError = Types.StudioMode(studioMode)
+	if not validMode then
+		return Promise.reject(string.format("Cannot claim exec job: %s", tostring(modeError)))
+	end
+	if self.__pluginSessionId == nil then
+		return Promise.reject("Cannot claim exec job without an active plugin session")
+	end
+
+	local url = buildExecClaimUrl(self.__baseUrl, self.__pluginSessionId, studioMode)
+
+	return Http.get(url):andThen(function(response)
+		if response.code == 204 then
+			return nil
+		end
+
+		if response.code ~= 200 then
+			return Promise.reject(string.format("Unexpected exec claim response status %s", tostring(response.code)))
+		end
+
+		return decodeExecResponse(response, Types.ApiExecClaimResponse, "claimed-job response")
+	end)
+end
+
+function ApiContext:completeExecJob(jobId, payload, studioMode)
+	local validJobId, jobIdError = Types.Uuid(jobId)
+	if not validJobId then
+		return Promise.reject(string.format("Cannot complete exec job: %s", tostring(jobIdError)))
+	end
+	local validMode, modeError = Types.StudioMode(studioMode)
+	if not validMode then
+		return Promise.reject(string.format("Cannot complete exec job: %s", tostring(modeError)))
+	end
+	if self.__pluginSessionId == nil then
+		return Promise.reject("Cannot complete exec job without an active plugin session")
+	end
+
+	payload = withExecSession(payload, self.__pluginSessionId, studioMode)
+
+	local encodeOk, body = pcall(Http.msgpackEncode, payload)
+	if not encodeOk then
+		return Promise.reject("Could not encode exec completion payload: " .. tostring(body))
+	end
+	if #body > EXEC_COMPLETION_BODY_LIMIT_BYTES then
+		return Promise.reject(
+			string.format(
+				"Exec completion payload is %d bytes, exceeding the %d-byte server limit",
+				#body,
+				EXEC_COMPLETION_BODY_LIMIT_BYTES
+			)
+		)
+	end
+
+	local url = ("%s/api/exec/jobs/%s/complete"):format(self.__baseUrl, jobId)
+
+	return Http.post(url, body)
+		:andThen(function(response)
+			if response.code ~= 200 then
+				return Promise.reject(
+					string.format("Unexpected exec completion response status %s", tostring(response.code))
+				)
+			end
+
+			local responseBody = decodeExecResponse(response, Types.ApiExecJobResponse, "completion response")
+			return Promise.resolve(responseBody):andThen(function(validatedBody)
+				return {
+					status = "accepted",
+					job = validatedBody,
+				}
+			end)
+		end)
+		:catch(function(errorValue)
+			if isCompletionConflict(errorValue) then
+				return {
+					status = "conflict",
+				}
+			end
+
+			return Promise.reject(errorValue)
+		end)
+end
+
+function ApiContext:claimNextAutomationJob(studioMode)
+	local validMode, modeError = Types.StudioMode(studioMode)
+	if not validMode then
+		return Promise.reject(string.format("Cannot claim automation job: %s", tostring(modeError)))
+	end
+	if self.__pluginSessionId == nil then
+		return Promise.reject("Cannot claim automation job without an active plugin session")
+	end
+
+	local url = buildAutomationClaimUrl(self.__baseUrl, self.__pluginSessionId, studioMode)
+	return Http.get(url):andThen(function(response)
+		if response.code == 204 then
+			return nil
+		end
+		if response.code ~= 200 then
+			return Promise.reject(
+				string.format("Unexpected automation claim response status %s", tostring(response.code))
+			)
+		end
+		return decodeExecResponse(
+			response,
+			Types.ApiAutomationClaimResponse,
+			"claimed-job response",
+			"Prism automation"
+		)
+	end)
+end
+
+function ApiContext:completeAutomationJob(jobId, payload, studioMode)
+	local validJobId, jobIdError = Types.Uuid(jobId)
+	if not validJobId then
+		return Promise.reject(string.format("Cannot complete automation job: %s", tostring(jobIdError)))
+	end
+	local validMode, modeError = Types.StudioMode(studioMode)
+	if not validMode then
+		return Promise.reject(string.format("Cannot complete automation job: %s", tostring(modeError)))
+	end
+	if self.__pluginSessionId == nil then
+		return Promise.reject("Cannot complete automation job without an active plugin session")
+	end
+
+	payload = withExecSession(payload, self.__pluginSessionId, studioMode)
+	local encodeOk, body = pcall(Http.msgpackEncode, payload)
+	if not encodeOk then
+		return Promise.reject("Could not encode automation completion payload: " .. tostring(body))
+	end
+	if #body > AUTOMATION_COMPLETION_BODY_LIMIT_BYTES then
+		return Promise.reject(
+			string.format(
+				"Automation completion payload is %d bytes, exceeding the %d-byte server limit",
+				#body,
+				AUTOMATION_COMPLETION_BODY_LIMIT_BYTES
+			)
+		)
+	end
+
+	local url = ("%s/api/automation/jobs/%s/complete"):format(self.__baseUrl, jobId)
+	return Http.post(url, body)
+		:andThen(function(response)
+			if response.code ~= 200 then
+				return Promise.reject(
+					string.format("Unexpected automation completion response status %s", tostring(response.code))
+				)
+			end
+			local responseBody =
+				decodeExecResponse(response, Types.ApiAutomationJobResponse, "completion response", "Prism automation")
+			return { status = "accepted", job = responseBody }
+		end)
+		:catch(function(errorValue)
+			if isCompletionConflict(errorValue) then
+				return { status = "conflict" }
+			end
+			return Promise.reject(errorValue)
+		end)
+end
+
+function ApiContext:updateAutomationStatus(studioMode)
+	local validMode, modeError = Types.StudioMode(studioMode)
+	if not validMode then
+		return Promise.reject(string.format("Cannot update automation status: %s", tostring(modeError)))
+	end
+	if self.__pluginSessionId == nil or self.__sessionId == nil then
+		return Promise.reject("Cannot update automation status without an active plugin session")
+	end
+
+	local body = Http.msgpackEncode({
+		pluginSessionId = self.__pluginSessionId,
+		serverSessionId = self.__sessionId,
+		studioMode = studioMode,
+		execHandlerAvailable = true,
+		automationHandlerVersion = AUTOMATION_HANDLER_VERSION,
+		pluginVersion = Version.display(Config.version),
+	})
+	local url = ("%s/api/automation/status"):format(self.__baseUrl)
+
+	return Http.post(url, body):andThen(function(response)
+		if response.code ~= 200 then
+			return Promise.reject(string.format("Unexpected automation status response %s", tostring(response.code)))
+		end
+
+		return decodeExecResponse(
+			response,
+			Types.ApiAutomationHeartbeatResponse,
+			"automation status response",
+			"Prism automation"
+		)
+	end)
+end
+
+ApiContext._test = {
+	beginPluginSession = beginPluginSession,
+	buildAutomationClaimUrl = buildAutomationClaimUrl,
+	buildExecClaimUrl = buildExecClaimUrl,
+	generatePluginSessionId = generatePluginSessionId,
+	withExecSession = withExecSession,
+}
 
 return ApiContext
