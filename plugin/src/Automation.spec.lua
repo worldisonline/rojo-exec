@@ -126,5 +126,98 @@ return function()
 			local payload = Automation._test.dispatch({ request = { kind = "unknown" } }, {})
 			expect(payload.outcome).to.equal("failure")
 		end)
+
+		it("marks rejected success results failed and keeps polling", function()
+			local timers = scheduler()
+			local completions = {}
+			local errors = 0
+			local claims = 0
+			local poller = Automation.new({
+				apiContext = {
+					getPluginSessionId = function()
+						return "session"
+					end,
+					claimNextAutomationJob = function()
+						claims += 1
+						if claims == 1 then
+							return Promise.resolve({ jobId = "job", request = { kind = "inspect" } })
+						end
+						return Promise.resolve(nil)
+					end,
+					completeAutomationJob = function(_, _, payload)
+						table.insert(completions, payload)
+						if #completions == 1 then
+							return Promise.resolve({
+								status = "rejected",
+								error = "Invalid automation completion: missing field `enum_type`",
+							})
+						end
+						return Promise.resolve({ status = "accepted" })
+					end,
+				},
+				onError = function()
+					errors += 1
+				end,
+				dependencies = {
+					delay = timers.delay,
+					studioMode = function()
+						return "edit"
+					end,
+					makeReferences = fakeReferences,
+					dispatch = function()
+						return { outcome = "success", result = { kind = "inspect" } }
+					end,
+				},
+			})
+
+			poller:start()
+			timers.step()
+			expect(#completions).to.equal(2)
+			expect(completions[2].outcome).to.equal("failure")
+			expect(errors).to.equal(0)
+			timers.step()
+			expect(claims).to.equal(2)
+			poller:stop()
+		end)
+
+		it("turns handler exceptions into terminal failure completions", function()
+			local timers = scheduler()
+			local completion
+			local errors = 0
+			local poller = Automation.new({
+				apiContext = {
+					getPluginSessionId = function()
+						return "session"
+					end,
+					claimNextAutomationJob = function()
+						return Promise.resolve({ jobId = "job", request = { kind = "inspect" } })
+					end,
+					completeAutomationJob = function(_, _, payload)
+						completion = payload
+						return Promise.resolve({ status = "accepted" })
+					end,
+				},
+				onError = function()
+					errors += 1
+				end,
+				dependencies = {
+					delay = timers.delay,
+					studioMode = function()
+						return "edit"
+					end,
+					makeReferences = fakeReferences,
+					dispatch = function()
+						error("broken inspect handler")
+					end,
+				},
+			})
+
+			poller:start()
+			timers.step()
+			expect(completion.outcome).to.equal("failure")
+			expect(completion.error:find("broken inspect handler", 1, true)).to.be.ok()
+			expect(errors).to.equal(0)
+			poller:stop()
+		end)
 	end)
 end

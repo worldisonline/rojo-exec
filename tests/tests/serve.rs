@@ -14,9 +14,9 @@ use crate::rojo_test::{
 
 use librojo::{
     automation::{
-        AutomationJobState, AutomationRequest, AutomationResult, InspectNode, InspectRequest,
-        InspectResult, InspectTarget, InstanceReference, MAX_AUTOMATION_REQUEST_BODY_BYTES,
-        MAX_PENDING_AUTOMATION_JOBS,
+        AutomationJobState, AutomationRequest, AutomationResult, AutomationValue, InspectNode,
+        InspectRequest, InspectResult, InspectTarget, InstanceReference,
+        MAX_AUTOMATION_REQUEST_BODY_BYTES, MAX_PENDING_AUTOMATION_JOBS,
     },
     exec::{MAX_PENDING_JOBS, MAX_SOURCE_SIZE_BYTES},
     web_api::{
@@ -44,6 +44,14 @@ fn inspect_request(target: &str) -> AutomationRequest {
 }
 
 fn inspect_result(session_id: &str, target: &str) -> AutomationResult {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "Material".to_owned(),
+        AutomationValue::EnumItem {
+            enum_type: "Material".to_owned(),
+            name: "Plastic".to_owned(),
+        },
+    );
     AutomationResult::Inspect(InspectResult {
         root: InspectNode {
             reference: InstanceReference {
@@ -56,7 +64,7 @@ fn inspect_result(session_id: &str, target: &str) -> AutomationResult {
             name: target.to_owned(),
             class_name: "Workspace".to_owned(),
             path: target.to_owned(),
-            properties: BTreeMap::new(),
+            properties,
             attributes: BTreeMap::new(),
             tags: Vec::new(),
             children: Vec::new(),
@@ -153,6 +161,29 @@ fn typed_automation_jobs_enforce_fifo_session_and_limits() {
             plugin_session_id: plugin_id.clone(),
             studio_mode: StudioMode::Edit,
         };
+        let mut malformed_completion = serde_json::to_value(&completion).unwrap();
+        malformed_completion["result"]["root"]["properties"]["Material"]
+            .as_object_mut()
+            .unwrap()
+            .remove("enum_type");
+        let malformed_response = session.api_request(
+            reqwest::Method::POST,
+            &format!("/api/automation/jobs/{}/complete", first.job_id),
+            Some(rmp_serde::to_vec_named(&malformed_completion).unwrap()),
+        );
+        assert_eq!(malformed_response.status(), StatusCode::BAD_REQUEST);
+        let malformed_error: serde_json::Value = decode_response(malformed_response);
+        assert!(malformed_error["details"]
+            .as_str()
+            .unwrap()
+            .contains("missing field `enum_type`"));
+
+        let active_after_rejection: AutomationStatusResponse =
+            decode_response(session.get_api_automation_status());
+        let active_plugin = active_after_rejection.plugin.unwrap();
+        assert!(active_plugin.connected);
+        assert_eq!(active_plugin.plugin_session_id, plugin_id);
+
         let completed: AutomationJobResponse =
             decode_response(session.post_api_automation_complete(&first.job_id, &completion));
         assert_eq!(completed.state, AutomationJobState::Succeeded);

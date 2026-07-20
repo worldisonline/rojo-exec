@@ -64,6 +64,18 @@ return function()
 			expect(result.root.properties.Source).never.to.be.ok()
 		end)
 
+		it("includes enum type and item names in inspected properties", function()
+			local part = Instance.new("Part")
+			part.Name = "EnumPart"
+			part.Material = Enum.Material.Plastic
+			part.Parent = root
+
+			local result = Inspect.run(request(1), { references = InstanceReferences.new("session") })
+			local properties = result.root.children[1].properties
+			expect(properties.Material.enum_type).to.equal("Material")
+			expect(properties.Material.name).to.equal("Plastic")
+		end)
+
 		it("reports missing and destroyed targets", function()
 			local missing = request(0)
 			missing.target.segments[2] = "MissingPrismInspectTarget"

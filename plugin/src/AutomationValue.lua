@@ -59,7 +59,24 @@ function AutomationValue.encode(value, references, diagnosticPath: string?)
 				max = { x = current.Max.X, y = current.Max.Y },
 			}
 		elseif valueType == "EnumItem" then
-			return { kind = "enumItem", enumType = tostring(current.EnumType):gsub("^Enum%.", ""), name = current.Name }
+			local enumOk, enumType, name = pcall(function()
+				local enumTypeValue = current.EnumType
+				local nameOk, structuredName = pcall(function()
+					return enumTypeValue.Name
+				end)
+				local enumTypeText = tostring(enumTypeValue)
+				local parsedEnumType = if nameOk and type(structuredName) == "string"
+					then structuredName
+					else enumTypeText:match("^Enum%.([%w_]+)$") or enumTypeText:match("^([%w_]+)$")
+				if parsedEnumType == nil or parsedEnumType == "" or type(current.Name) ~= "string" then
+					error("EnumItem metadata is unavailable")
+				end
+				return parsedEnumType, current.Name
+			end)
+			if not enumOk then
+				return nil, string.format("Could not encode EnumItem at %s: %s", path, tostring(enumType))
+			end
+			return { kind = "enumItem", enum_type = enumType, name = name }
 		elseif valueType == "BrickColor" then
 			return { kind = "brickColor", number = current.Number, name = current.Name }
 		elseif valueType == "NumberRange" then

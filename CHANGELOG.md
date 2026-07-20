@@ -8,6 +8,7 @@
 * Completed Prism branding across the Studio plugin while preserving Rojo-compatible project, protocol, widget, action, setting, and layout identifiers.
 * Redesigned the existing Studio panel with a responsive dark glass theme, Prism assets, and a low-motion ambient color background.
 * Removed the exec feasibility spike after moving its unique cleanup regression into the production exec tests.
+* Fixed enum-valued inspect results being rejected by the server, kept automation polling alive after job-specific completion errors, and made bordered UI containers tolerate omitted content.
 
 The entries below are the retained upstream Rojo changelog and attribution.
 

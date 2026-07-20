@@ -103,7 +103,15 @@ function Automation:__complete(generation, jobId, payload, attempt)
 	local ok, promise =
 		pcall(self.__apiContext.completeAutomationJob, self.__apiContext, jobId, payload, self.__studioMode())
 	if not ok then
-		self:__fail(generation, promise)
+		Log.warn("Prism automation completion for job {} failed before it could be sent: {}", jobId, promise)
+		if type(payload) ~= "table" or payload.outcome ~= "failure" then
+			self:__complete(generation, jobId, {
+				outcome = "failure",
+				error = "Prism could not prepare the automation result: " .. tostring(promise),
+			}, 1)
+		else
+			self:__release(generation)
+		end
 		return
 	end
 	promise
@@ -112,7 +120,21 @@ function Automation:__complete(generation, jobId, payload, attempt)
 				return
 			end
 			if response.status == "conflict" then
-				Log.warn("Prism automation completion for job {} returned HTTP 409", jobId)
+				Log.warn(
+					"Prism automation completion for job {} was already terminal or expired: {}",
+					jobId,
+					response.error or "HTTP conflict"
+				)
+			elseif response.status == "rejected" then
+				local completionError = response.error or "The server rejected the automation completion"
+				Log.warn("Prism automation completion for job {} was rejected: {}", jobId, completionError)
+				if payload.outcome ~= "failure" then
+					self:__complete(generation, jobId, {
+						outcome = "failure",
+						error = "Prism could not submit the automation result: " .. tostring(completionError),
+					}, 1)
+					return
+				end
 			end
 			self:__release(generation)
 		end)
@@ -156,7 +178,20 @@ function Automation:__poll(generation)
 				self:__release(generation)
 				return
 			end
-			local payload = self.__dispatch(job, self.__references)
+			local dispatchOk, payload = xpcall(function()
+				return self.__dispatch(job, self.__references)
+			end, debug.traceback)
+			if not dispatchOk then
+				payload = {
+					outcome = "failure",
+					error = "Automation handler failed: " .. tostring(payload),
+				}
+			elseif type(payload) ~= "table" or (payload.outcome ~= "success" and payload.outcome ~= "failure") then
+				payload = {
+					outcome = "failure",
+					error = "Automation handler returned an invalid completion payload",
+				}
+			end
 			self:__complete(generation, job.jobId, payload, 1)
 		end)
 		:catch(function(errorValue)

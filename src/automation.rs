@@ -209,6 +209,7 @@ pub enum AutomationValue {
         max: AutomationVector2,
     },
     EnumItem {
+        #[serde(alias = "enumType")]
         enum_type: String,
         name: String,
     },
@@ -640,6 +641,50 @@ mod tests {
             truncated: false,
             truncation_reason: None,
         })
+    }
+
+    #[test]
+    fn enum_values_use_the_canonical_field_and_accept_the_legacy_alias() {
+        let canonical = serde_json::json!({
+            "kind": "enumItem",
+            "enum_type": "Material",
+            "name": "Plastic",
+        });
+        let expected = AutomationValue::EnumItem {
+            enum_type: "Material".to_owned(),
+            name: "Plastic".to_owned(),
+        };
+        assert_eq!(
+            serde_json::from_value::<AutomationValue>(canonical).unwrap(),
+            expected
+        );
+
+        let legacy = serde_json::json!({
+            "kind": "enumItem",
+            "enumType": "Material",
+            "name": "Plastic",
+        });
+        assert_eq!(
+            serde_json::from_value::<AutomationValue>(legacy).unwrap(),
+            expected
+        );
+
+        let serialized = serde_json::to_value(expected).unwrap();
+        assert_eq!(serialized["enum_type"], "Material");
+        assert!(serialized.get("enumType").is_none());
+    }
+
+    #[test]
+    fn enum_values_report_a_missing_type_precisely() {
+        let error = serde_json::from_value::<AutomationValue>(serde_json::json!({
+            "kind": "enumItem",
+            "name": "Plastic",
+        }))
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("missing field `enum_type`"),
+            "unexpected enum validation error: {error}"
+        );
     }
 
     #[test]

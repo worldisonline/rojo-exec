@@ -72,12 +72,34 @@ local function decodeExecResponse(response, validator, description, protocolName
 	return body
 end
 
-local function isCompletionConflict(errorValue)
+local function completionHttpStatus(errorValue)
 	-- The existing HTTP wrapper intentionally turns every non-2xx response
 	-- into Http.Error.Unknown and includes the status at the start of its
 	-- message. Keep this compatibility check here instead of creating another
 	-- HTTP connection path just for exec.
-	return tostring(errorValue):find("^Unknown HTTP error: 409:") ~= nil
+	return tonumber(tostring(errorValue):match("^Unknown HTTP error: (%d+):"))
+end
+
+local function isCompletionConflict(errorValue)
+	return completionHttpStatus(errorValue) == 409
+end
+
+local function automationCompletionRejection(errorValue)
+	local statusCode = completionHttpStatus(errorValue)
+	if statusCode == 404 or statusCode == 409 then
+		return {
+			status = "conflict",
+			code = statusCode,
+			error = tostring(errorValue),
+		}
+	elseif statusCode == 400 or statusCode == 413 then
+		return {
+			status = "rejected",
+			code = statusCode,
+			error = tostring(errorValue),
+		}
+	end
+	return nil
 end
 
 local function rejectWrongProtocolVersion(infoResponseBody)
@@ -525,16 +547,20 @@ function ApiContext:completeAutomationJob(jobId, payload, studioMode)
 	payload = withExecSession(payload, self.__pluginSessionId, studioMode)
 	local encodeOk, body = pcall(Http.msgpackEncode, payload)
 	if not encodeOk then
-		return Promise.reject("Could not encode automation completion payload: " .. tostring(body))
+		return Promise.resolve({
+			status = "rejected",
+			error = "Could not encode automation completion payload: " .. tostring(body),
+		})
 	end
 	if #body > AUTOMATION_COMPLETION_BODY_LIMIT_BYTES then
-		return Promise.reject(
-			string.format(
+		return Promise.resolve({
+			status = "rejected",
+			error = string.format(
 				"Automation completion payload is %d bytes, exceeding the %d-byte server limit",
 				#body,
 				AUTOMATION_COMPLETION_BODY_LIMIT_BYTES
-			)
-		)
+			),
+		})
 	end
 
 	local url = ("%s/api/automation/jobs/%s/complete"):format(self.__baseUrl, jobId)
@@ -550,8 +576,9 @@ function ApiContext:completeAutomationJob(jobId, payload, studioMode)
 			return { status = "accepted", job = responseBody }
 		end)
 		:catch(function(errorValue)
-			if isCompletionConflict(errorValue) then
-				return { status = "conflict" }
+			local rejection = automationCompletionRejection(errorValue)
+			if rejection ~= nil then
+				return rejection
 			end
 			return Promise.reject(errorValue)
 		end)
@@ -594,6 +621,8 @@ ApiContext._test = {
 	beginPluginSession = beginPluginSession,
 	buildAutomationClaimUrl = buildAutomationClaimUrl,
 	buildExecClaimUrl = buildExecClaimUrl,
+	completionHttpStatus = completionHttpStatus,
+	automationCompletionRejection = automationCompletionRejection,
 	generatePluginSessionId = generatePluginSessionId,
 	withExecSession = withExecSession,
 }

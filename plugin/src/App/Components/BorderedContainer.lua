@@ -11,16 +11,19 @@ local bindingUtil = require(Plugin.App.bindingUtil)
 local SlicedImage = require(script.Parent.SlicedImage)
 
 local e = Roact.createElement
+local defaultTransparency = select(1, Roact.createBinding(0))
 
 local function BorderedContainer(props)
 	return Theme.with(function(theme)
-		local backgroundTransparency = props.transparency:map(function(value)
+		local transparency = props.transparency or defaultTransparency
+		local children = props[Roact.Children] or {}
+		local backgroundTransparency = transparency:map(function(value)
 			return bindingUtil.blendAlpha({ 0.1, value })
 		end)
-		local borderTransparency = props.transparency:map(function(value)
+		local borderTransparency = transparency:map(function(value)
 			return bindingUtil.blendAlpha({ 0.18, value })
 		end)
-		local shadowTransparency = props.transparency:map(function(value)
+		local shadowTransparency = transparency:map(function(value)
 			return bindingUtil.blendAlpha({ 0.72, value })
 		end)
 
@@ -47,7 +50,7 @@ local function BorderedContainer(props)
 				Position = UDim2.new(0, 1, 0, 1),
 				BackgroundTransparency = 1,
 				ZIndex = 2,
-			}, props[Roact.Children]),
+			}, children),
 
 			Border = e(SlicedImage, {
 				slice = Assets.Slices.RoundedBorder,

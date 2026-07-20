@@ -54,5 +54,17 @@ return function()
 			end
 			expect(Types.StudioMode("server")).to.equal(false)
 		end)
+
+		it("classifies job-specific completion rejections without hiding transport errors", function()
+			local badRequest = helpers.automationCompletionRejection(
+				"Unknown HTTP error: 400: Invalid automation completion: missing field `enum_type`"
+			)
+			expect(badRequest.status).to.equal("rejected")
+			expect(badRequest.code).to.equal(400)
+
+			local expired = helpers.automationCompletionRejection("Unknown HTTP error: 404: unknown job")
+			expect(expired.status).to.equal("conflict")
+			expect(helpers.automationCompletionRejection("HTTP request timed out.")).never.to.be.ok()
+		end)
 	end)
 end
